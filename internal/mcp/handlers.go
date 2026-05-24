@@ -3,19 +3,28 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/anutron/plannotator_argus/internal/plannotator"
 )
 
 // HandlerDeps bundles the runtime dependencies the verb handlers share.
+//
+// ParentCtx and SessionWG are wired by daemon.Start so that all subprocess
+// goroutines spawned by verb handlers can be SIGKILL'd on daemon shutdown
+// (via the cancellation semantics of exec.CommandContext) and joined before
+// Stop returns.
 type HandlerDeps struct {
-	Runner  *plannotator.Runner
-	Store   *SessionStore
-	Log     *slog.Logger
-	URLPoll time.Duration // how long to poll for session URL discovery; default 5s
+	Runner    *plannotator.Runner
+	Store     *SessionStore
+	Log       *slog.Logger
+	URLPoll   time.Duration // how long to poll for session URL discovery; default 5s
+	ParentCtx context.Context
+	SessionWG *sync.WaitGroup
 }
 
 func (d *HandlerDeps) urlPoll() time.Duration {
@@ -35,27 +44,39 @@ type sessionEnvelope struct {
 // startSession spawns plannotator with the given args, creates a Session in
 // the store, kicks off a background goroutine to handle the subprocess's
 // lifecycle, and returns the envelope.
-func (d *HandlerDeps) startSession(ctx context.Context, verb string, args []string) (sessionEnvelope, error) {
-	sess := d.Store.Create(verb)
-	// Use a background context for the subprocess so the MCP callback's
-	// 30s timeout doesn't kill plannotator. Cancellation happens at daemon
-	// shutdown via Stop().
-	subCtx, cancel := context.WithCancel(context.Background())
-	cmd := d.Runner.Spawn(subCtx, args)
+//
+// Spawn failures are surfaced as a tool error (so the agent gets isError:true)
+// rather than as a "failed session" envelope with no error field. A failed
+// spawn means no session ever existed — there's nothing to poll.
+func (d *HandlerDeps) startSession(ctx context.Context, verb string, args []string) (any, error) {
+	parent := d.ParentCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	// exec.CommandContext SIGKILLs the child when the ctx is cancelled,
+	// so deriving from ParentCtx makes daemon shutdown reach every
+	// in-flight subprocess.
+	cmd := d.Runner.Spawn(parent, args)
 	stdout := &capturedBuffer{cap: 8 << 20}
 	stderr := &capturedBuffer{cap: 8 << 20}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
-		cancel()
-		d.Store.MarkFailed(sess.ID, fmt.Sprintf("spawn plannotator: %v", err))
-		return sessionEnvelope{SessionID: sess.ID, Status: string(StatusFailed)}, nil
+		return nil, fmt.Errorf("spawn plannotator: %w", err)
 	}
+	sess := d.Store.Create(verb)
 	pid := cmd.Process.Pid
+
+	if d.SessionWG != nil {
+		d.SessionWG.Add(2)
+	}
 
 	// Best-effort URL discovery (poll Plannotator's sessions/<pid>.json).
 	go func() {
-		url := d.Runner.DiscoverSessionURL(pid, d.urlPoll())
+		if d.SessionWG != nil {
+			defer d.SessionWG.Done()
+		}
+		url := d.Runner.DiscoverSessionURL(parent, pid, d.urlPoll())
 		if url != "" {
 			d.Store.SetURL(sess.ID, url)
 		}
@@ -63,7 +84,9 @@ func (d *HandlerDeps) startSession(ctx context.Context, verb string, args []stri
 
 	// Lifecycle goroutine.
 	go func() {
-		defer cancel()
+		if d.SessionWG != nil {
+			defer d.SessionWG.Done()
+		}
 		err := cmd.Wait()
 		if err != nil {
 			msg := err.Error()
@@ -79,7 +102,8 @@ func (d *HandlerDeps) startSession(ctx context.Context, verb string, args []stri
 			return
 		}
 		// If stdout is valid JSON, pass it through verbatim; otherwise
-		// wrap it as a string for downstream parsing.
+		// wrap it as a string so plannotator_session_result always returns
+		// a parseable object (Plannotator's `last` verb emits prose, not JSON).
 		if json.Valid(raw) {
 			d.Store.MarkComplete(sess.ID, json.RawMessage(raw))
 			return
@@ -220,7 +244,10 @@ func SessionResultHandler(deps *HandlerDeps) Handler {
 			wait = 25
 		}
 		sess, err := deps.Store.WaitForResolution(ctx, p.SessionID, time.Duration(wait)*time.Second)
-		if err != nil {
+		// ErrUnknownSession is a real tool error. Context cancellation
+		// (caller hung up early) is not — return whatever snapshot we have
+		// so the agent can poll again with the same session_id.
+		if errors.Is(err, ErrUnknownSession) {
 			return nil, err
 		}
 		out := map[string]any{

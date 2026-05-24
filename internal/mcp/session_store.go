@@ -15,10 +15,9 @@ import (
 type SessionStatus string
 
 const (
-	StatusPending   SessionStatus = "pending"
-	StatusComplete  SessionStatus = "complete"
-	StatusFailed    SessionStatus = "failed"
-	StatusCancelled SessionStatus = "cancelled"
+	StatusPending  SessionStatus = "pending"
+	StatusComplete SessionStatus = "complete"
+	StatusFailed   SessionStatus = "failed"
 )
 
 // ErrUnknownSession is returned when a session_id is not (or no longer)

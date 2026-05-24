@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -84,7 +85,10 @@ exit 0
 func setupCfg(t *testing.T, argusURL, plannotatorBin string) *config.Config {
 	t.Helper()
 	dir := t.TempDir()
-	cfg := config.Default()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg.StateDir = dir
 	cfg.ArgusTokenPath = filepath.Join(dir, "scope-token")
 	cfg.HookTokenPath = filepath.Join(dir, "hook-token")
@@ -176,6 +180,71 @@ func TestDaemonHookEndpointReachable(t *testing.T) {
 	// We sent empty body to a stub that does nothing → exit 0 → 200 with empty stdout.
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestDaemonStopKillsInFlightSubprocesses(t *testing.T) {
+	stub := newStubArgus(t)
+	defer stub.server.Close()
+
+	// Stub plannotator that sleeps until SIGKILL. Records its PID so the
+	// test can verify it really did die.
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "plannotator")
+	pidFile := filepath.Join(dir, "running.pid")
+	script := `#!/bin/bash
+case "$1" in --version) echo "stub"; exit 0;; esac
+echo $$ > ` + pidFile + `
+sleep 60
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := setupCfg(t, stub.server.URL, bin)
+
+	ctx := context.Background()
+	d, err := Start(ctx, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Drive a session via the annotate handler. Need a writable cwd with a
+	// real file because ResolvePath rejects traversal.
+	docDir := t.TempDir()
+	doc := filepath.Join(docDir, "doc.md")
+	if err := os.WriteFile(doc, []byte("# hi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Use the runner to spawn a long-running stub child directly through
+	// the daemon's parent context so we exercise the kill-on-shutdown path
+	// without needing to drive the MCP HTTP server end-to-end.
+	_ = docDir // kept for symmetry with the original handler invocation idea
+	cmd := d.Runner.Spawn(d.parentCtx, []string{"sleep-test"})
+	if err := cmd.Start(); err != nil {
+		d.Stop(ctx)
+		t.Fatal(err)
+	}
+	childPID := cmd.Process.Pid
+	d.sessionWG.Add(1)
+	go func() {
+		defer d.sessionWG.Done()
+		_ = cmd.Wait()
+	}()
+
+	// Give the stub time to write its pid file (best effort).
+	time.Sleep(100 * time.Millisecond)
+
+	start := time.Now()
+	d.Stop(context.Background())
+	if elapsed := time.Since(start); elapsed > SessionShutdownGrace+1*time.Second {
+		t.Errorf("Stop took %v, want <= %v", elapsed, SessionShutdownGrace+time.Second)
+	}
+
+	// Confirm the child process is gone.
+	if proc, err := os.FindProcess(childPID); err == nil {
+		if err := proc.Signal(syscall.Signal(0)); err == nil {
+			t.Errorf("subprocess pid %d still alive after Stop", childPID)
+		}
 	}
 }
 

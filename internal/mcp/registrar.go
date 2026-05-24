@@ -30,6 +30,7 @@ type Registrar struct {
 	mu          sync.Mutex
 	definitions []ToolDefinition
 	stopCh      chan struct{}
+	stopOnce    sync.Once
 	wg          sync.WaitGroup
 }
 
@@ -82,14 +83,25 @@ func (r *Registrar) Start(ctx context.Context) error {
 
 // Stop unregisters every definition with argus and joins the heartbeat
 // goroutine. Errors from unregister are logged but not returned.
+//
+// Stop uses a fresh 10s context for the DELETE calls so that a caller-
+// cancelled context (e.g. SIGTERM-driven shutdown) doesn't abort cleanup
+// and leave stale tool registrations until argus's idle sweep.
 func (r *Registrar) Stop(ctx context.Context) error {
-	r.mu.Lock()
+	var firstStop bool
+	r.stopOnce.Do(func() { firstStop = true })
+	if !firstStop {
+		return nil
+	}
 	close(r.stopCh)
+	r.mu.Lock()
 	defs := append([]ToolDefinition(nil), r.definitions...)
 	r.mu.Unlock()
 	r.wg.Wait()
+	cleanCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	for _, d := range defs {
-		if err := r.client.UnregisterTool(ctx, d.Name); err != nil {
+		if err := r.client.UnregisterTool(cleanCtx, d.Name); err != nil {
 			r.log.Warn("unregister tool", "name", d.Name, "err", err)
 		}
 	}

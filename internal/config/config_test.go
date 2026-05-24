@@ -8,8 +8,17 @@ import (
 	"time"
 )
 
+func mustDefault(t *testing.T) *Config {
+	t.Helper()
+	c, err := Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
 func TestDefault(t *testing.T) {
-	c := Default()
+	c := mustDefault(t)
 	if c.ArgusBaseURL == "" || !strings.HasPrefix(c.ArgusBaseURL, "http") {
 		t.Errorf("ArgusBaseURL bad: %q", c.ArgusBaseURL)
 	}
@@ -25,7 +34,7 @@ func TestDefault(t *testing.T) {
 }
 
 func TestLoadFromEnv(t *testing.T) {
-	c := Default()
+	c := mustDefault(t)
 	t.Setenv("PLANNOTATOR_LISTEN_ADDR", "127.0.0.1:9999")
 	t.Setenv("PLANNOTATOR_MCP_HEARTBEAT", "30s")
 	if err := c.LoadFromEnv(); err != nil {
@@ -40,16 +49,16 @@ func TestLoadFromEnv(t *testing.T) {
 }
 
 func TestLoadFromEnvBadDuration(t *testing.T) {
-	c := Default()
+	c := mustDefault(t)
 	t.Setenv("PLANNOTATOR_MCP_HEARTBEAT", "not-a-duration")
 	if err := c.LoadFromEnv(); err == nil {
-		t.Errorf("expected error, got nil")
+		t.Errorf("expected env-parse error, got nil")
 	}
 }
 
 func TestLoadScopeTokenMissing(t *testing.T) {
 	dir := t.TempDir()
-	c := Default()
+	c := mustDefault(t)
 	c.ArgusTokenPath = filepath.Join(dir, "missing-token")
 	_, err := c.LoadScopeToken()
 	if err == nil {
@@ -62,7 +71,7 @@ func TestLoadScopeTokenMissing(t *testing.T) {
 
 func TestLoadScopeTokenEmpty(t *testing.T) {
 	dir := t.TempDir()
-	c := Default()
+	c := mustDefault(t)
 	c.ArgusTokenPath = filepath.Join(dir, "empty-token")
 	if err := os.WriteFile(c.ArgusTokenPath, []byte("   \n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -75,7 +84,7 @@ func TestLoadScopeTokenEmpty(t *testing.T) {
 
 func TestLoadScopeTokenSuccess(t *testing.T) {
 	dir := t.TempDir()
-	c := Default()
+	c := mustDefault(t)
 	c.ArgusTokenPath = filepath.Join(dir, "token")
 	if err := os.WriteFile(c.ArgusTokenPath, []byte("  abcdef123  \n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -91,7 +100,7 @@ func TestLoadScopeTokenSuccess(t *testing.T) {
 
 func TestLoadOrCreateHookTokenCreatesOnce(t *testing.T) {
 	dir := t.TempDir()
-	c := Default()
+	c := mustDefault(t)
 	c.HookTokenPath = filepath.Join(dir, "hook-token")
 
 	tok1, err := c.LoadOrCreateHookToken()
@@ -101,7 +110,6 @@ func TestLoadOrCreateHookTokenCreatesOnce(t *testing.T) {
 	if len(tok1) < 32 {
 		t.Errorf("token too short: %q", tok1)
 	}
-	// File must exist with mode 0600.
 	info, err := os.Stat(c.HookTokenPath)
 	if err != nil {
 		t.Fatal(err)
@@ -110,12 +118,20 @@ func TestLoadOrCreateHookTokenCreatesOnce(t *testing.T) {
 		t.Errorf("hook token mode = %v, want 0600", info.Mode().Perm())
 	}
 
-	// Second call must return the same token (preserved).
 	tok2, err := c.LoadOrCreateHookToken()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if tok1 != tok2 {
 		t.Errorf("token regenerated on second call: %q != %q", tok1, tok2)
+	}
+}
+
+func TestLoadOrCreateHookTokenMissingDir(t *testing.T) {
+	c := mustDefault(t)
+	c.HookTokenPath = "/nonexistent/dir/hook-token"
+	_, err := c.LoadOrCreateHookToken()
+	if err == nil {
+		t.Error("expected error for missing parent dir")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -18,14 +19,21 @@ func newStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Report whether the plannotator-argus daemon is running",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg := config.Default()
+			cfg, err := config.Default()
+			if err != nil {
+				return err
+			}
 			_ = cfg.LoadFromEnv()
 			pidPath := cfg.PIDPath()
-			raw, err := os.ReadFile(pidPath)
+			info, err := os.Stat(pidPath)
 			if errors.Is(err, os.ErrNotExist) {
 				fmt.Println("not running")
 				return nil
 			}
+			if err != nil {
+				return fmt.Errorf("stat pidfile %s: %w", pidPath, err)
+			}
+			raw, err := os.ReadFile(pidPath)
 			if err != nil {
 				return fmt.Errorf("read pidfile %s: %w", pidPath, err)
 			}
@@ -42,7 +50,7 @@ func newStatusCmd() *cobra.Command {
 				fmt.Printf("not running (stale pidfile pid=%d)\n", pid)
 				return nil
 			}
-			fmt.Printf("running (pid=%d, pidfile=%s)\n", pid, pidPath)
+			fmt.Printf("running (pid=%d, since=%s)\n", pid, info.ModTime().Format(time.RFC3339))
 			return nil
 		},
 	}

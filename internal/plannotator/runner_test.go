@@ -105,7 +105,7 @@ func TestDiscoverSessionURLPresent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%d.json", pid)), contents, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := r.DiscoverSessionURL(pid, 100*time.Millisecond)
+	got := r.DiscoverSessionURL(context.Background(), pid, 100*time.Millisecond)
 	if got != "http://localhost:9001" {
 		t.Errorf("DiscoverSessionURL = %q, want %q", got, "http://localhost:9001")
 	}
@@ -114,8 +114,26 @@ func TestDiscoverSessionURLPresent(t *testing.T) {
 func TestDiscoverSessionURLMissing(t *testing.T) {
 	dir := t.TempDir()
 	r := &Runner{SessionsDir: dir}
-	got := r.DiscoverSessionURL(9999, 100*time.Millisecond)
+	got := r.DiscoverSessionURL(context.Background(), 9999, 100*time.Millisecond)
 	if got != "" {
 		t.Errorf("DiscoverSessionURL = %q, want empty", got)
+	}
+}
+
+func TestDiscoverSessionURLCtxCancel(t *testing.T) {
+	dir := t.TempDir()
+	r := &Runner{SessionsDir: dir}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	got := r.DiscoverSessionURL(ctx, 9999, 5*time.Second)
+	if got != "" {
+		t.Errorf("DiscoverSessionURL = %q", got)
+	}
+	if time.Since(start) > 200*time.Millisecond {
+		t.Errorf("ctx cancel ignored: took %v", time.Since(start))
 	}
 }

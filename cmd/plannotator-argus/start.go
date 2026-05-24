@@ -22,9 +22,12 @@ func newStartCmd() *cobra.Command {
 		Short: "Start the plannotator-argus daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !foreground {
-				return errors.New("background mode is not implemented; rerun with --foreground (use nohup or a launchd plist to background it for now)")
+				return errors.New("background mode is not implemented in v1. To background the daemon run: `nohup plannotator-argus start --foreground &` or install a launchd plist that invokes the same command")
 			}
-			cfg := config.Default()
+			cfg, err := config.Default()
+			if err != nil {
+				return err
+			}
 			if err := cfg.LoadFromEnv(); err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}

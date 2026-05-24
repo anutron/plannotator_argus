@@ -27,9 +27,17 @@ type Config struct {
 	SessionTTL      time.Duration
 }
 
-// Default returns a Config populated with v1 defaults.
-func Default() *Config {
-	home, _ := os.UserHomeDir()
+// Default returns a Config populated with v1 defaults. Errors only if
+// the user's home directory can't be resolved (extremely rare; would
+// otherwise silently relocate the daemon's state to the cwd).
+func Default() (*Config, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve home dir: %w", err)
+	}
+	if home == "" {
+		return nil, fmt.Errorf("resolve home dir: $HOME is unset")
+	}
 	stateDir := filepath.Join(home, ".plannotator")
 	return &Config{
 		ArgusBaseURL:   "http://127.0.0.1:7743",
@@ -40,7 +48,7 @@ func Default() *Config {
 		ListenAddr:     "127.0.0.1:7745",
 		MCPHeartbeat:   5 * time.Minute,
 		SessionTTL:     10 * time.Minute,
-	}
+	}, nil
 }
 
 // PIDPath returns the path of the daemon's PID file.

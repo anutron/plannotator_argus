@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,10 +12,30 @@ import (
 	"github.com/anutron/plannotator_argus/internal/argus"
 )
 
+// recorder synchronizes test-side reads with handler-side writes so the
+// race detector doesn't flag the obvious slice append from inside an
+// httptest handler.
+type recorder struct {
+	mu       sync.Mutex
+	posts    []string
+	deletes  []string
+}
+
+func (r *recorder) addPost(s string)   { r.mu.Lock(); r.posts = append(r.posts, s); r.mu.Unlock() }
+func (r *recorder) addDelete(s string) { r.mu.Lock(); r.deletes = append(r.deletes, s); r.mu.Unlock() }
+func (r *recorder) postCount() int     { r.mu.Lock(); defer r.mu.Unlock(); return len(r.posts) }
+func (r *recorder) deleteSnapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, len(r.deletes))
+	copy(out, r.deletes)
+	return out
+}
+
 func TestRegistrarRegistersOnStart(t *testing.T) {
-	var registered []string
+	rec := &recorder{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		registered = append(registered, r.URL.Path)
+		rec.addPost(r.URL.Path)
 		w.WriteHeader(http.StatusCreated)
 	}))
 	defer srv.Close()
@@ -29,8 +50,8 @@ func TestRegistrarRegistersOnStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Stop(context.Background())
-	if len(registered) != 2 {
-		t.Errorf("registered %d, want 2: %v", len(registered), registered)
+	if rec.postCount() != 2 {
+		t.Errorf("registered %d, want 2", rec.postCount())
 	}
 }
 
@@ -76,10 +97,10 @@ func TestRegistrarHeartbeatRePOSTs(t *testing.T) {
 }
 
 func TestRegistrarUnregistersOnStop(t *testing.T) {
-	var deletes []string
+	rec := &recorder{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
-			deletes = append(deletes, r.URL.Path)
+			rec.addDelete(r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -95,7 +116,28 @@ func TestRegistrarUnregistersOnStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.Stop(context.Background())
-	if len(deletes) != 2 {
-		t.Errorf("deletes = %v, want 2", deletes)
+	if got := rec.deleteSnapshot(); len(got) != 2 {
+		t.Errorf("deletes = %v, want 2", got)
+	}
+}
+
+func TestRegistrarStopIdempotent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	client := argus.New(srv.URL, "tok")
+	r := NewRegistrar(client, "http://127.0.0.1:7745", "Bearer secret", nil)
+	r.SetHeartbeat(time.Hour)
+	r.Add(ToolDefinition{Name: "plannotator_a"})
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Second Stop must not panic or block.
+	if err := r.Stop(context.Background()); err != nil {
+		t.Errorf("second Stop returned err: %v", err)
 	}
 }

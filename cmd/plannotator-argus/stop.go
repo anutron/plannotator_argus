@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -18,12 +19,18 @@ func newStopCmd() *cobra.Command {
 		Use:   "stop",
 		Short: "Stop a running plannotator-argus daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg := config.Default()
+			cfg, err := config.Default()
+			if err != nil {
+				return err
+			}
 			_ = cfg.LoadFromEnv()
 			pidPath := cfg.PIDPath()
 			raw, err := os.ReadFile(pidPath)
+			if errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("no pidfile at %s (daemon not running?)", pidPath)
+			}
 			if err != nil {
-				return fmt.Errorf("no pidfile at %s: %w", pidPath, err)
+				return fmt.Errorf("read pidfile %s: %w", pidPath, err)
 			}
 			pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
 			if err != nil {
@@ -33,10 +40,15 @@ func newStopCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("find pid %d: %w", pid, err)
 			}
+			// Verify the target is alive before SIGTERM'ing. Avoids
+			// signalling an unrelated process if the PID has been recycled.
+			if err := proc.Signal(syscall.Signal(0)); err != nil {
+				_ = os.Remove(pidPath)
+				return fmt.Errorf("no process for pid %d (stale pidfile removed)", pid)
+			}
 			if err := proc.Signal(syscall.SIGTERM); err != nil {
 				return fmt.Errorf("signal pid %d: %w", pid, err)
 			}
-			// Wait up to 10s for the process to exit.
 			deadline := time.Now().Add(10 * time.Second)
 			for time.Now().Before(deadline) {
 				if err := proc.Signal(syscall.Signal(0)); err != nil {

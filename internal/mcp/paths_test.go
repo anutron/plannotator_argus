@@ -1,6 +1,8 @@
 package mcp
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -80,5 +82,46 @@ func TestResolvePathCwdItself(t *testing.T) {
 	}
 	if got != "/tmp/foo" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestResolvePathEmptyCwd(t *testing.T) {
+	_, err := ResolvePath("", "anything.md")
+	if err == nil || !strings.Contains(err.Error(), "cwd is empty") {
+		t.Errorf("err = %v, want empty-cwd error", err)
+	}
+}
+
+func TestResolvePathSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	target, err := os.MkdirTemp("", "escape-target-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(target)
+	if err := os.Symlink(target, filepath.Join(dir, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ResolvePath(dir, "escape")
+	if err == nil {
+		t.Error("expected error for symlink escaping cwd")
+	}
+}
+
+func TestResolvePathSymlinkInternal(t *testing.T) {
+	dir := t.TempDir()
+	inner := filepath.Join(dir, "real")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inner, filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolvePath(dir, "link")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == "" {
+		t.Error("got empty path")
 	}
 }

@@ -9,36 +9,44 @@ import (
 // ResolvePath turns a (cwd, raw) pair into either an absolute URL pass-through
 // (when raw is http:// or https://) or an absolute filesystem path that
 // MUST be a descendant of cwd. Returns an error if traversal would escape
-// cwd.
+// cwd, including symlink-mediated escape for any path component that already
+// exists on disk.
 func ResolvePath(cwd, raw string) (string, error) {
 	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
 		return raw, nil
 	}
+	if cwd == "" {
+		return "", fmt.Errorf("cwd is empty")
+	}
 	if raw == "" {
 		return "", fmt.Errorf("path is empty")
-	}
-	if filepath.IsAbs(raw) {
-		// Absolute path is allowed only if it's a descendant of cwd or
-		// equal to cwd itself.
-		abs, err := filepath.Abs(raw)
-		if err != nil {
-			return "", err
-		}
-		cwdAbs, err := filepath.Abs(cwd)
-		if err != nil {
-			return "", err
-		}
-		if !descendant(cwdAbs, abs) {
-			return "", fmt.Errorf("absolute path %q escapes cwd %q", abs, cwdAbs)
-		}
-		return abs, nil
 	}
 	cwdAbs, err := filepath.Abs(cwd)
 	if err != nil {
 		return "", err
 	}
-	joined := filepath.Join(cwdAbs, raw)
-	if !descendant(cwdAbs, joined) {
+	// Resolve symlinks on cwd if it exists so that the descendant check
+	// compares like-for-like.
+	if resolved, err := filepath.EvalSymlinks(cwdAbs); err == nil {
+		cwdAbs = resolved
+	}
+	var joined string
+	if filepath.IsAbs(raw) {
+		joined, err = filepath.Abs(raw)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		joined = filepath.Join(cwdAbs, raw)
+	}
+	// Symlink-aware descendant check: if joined exists, resolve symlinks
+	// then check. If it doesn't exist (new file Plannotator may create),
+	// fall back to lexical containment of the cleaned path.
+	check := joined
+	if resolved, err := filepath.EvalSymlinks(joined); err == nil {
+		check = resolved
+	}
+	if !descendant(cwdAbs, check) {
 		return "", fmt.Errorf("path %q escapes cwd %q", raw, cwdAbs)
 	}
 	return joined, nil

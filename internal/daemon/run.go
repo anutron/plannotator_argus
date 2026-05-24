@@ -4,12 +4,15 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"time"
-
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/anutron/plannotator_argus/internal/argus"
 	"github.com/anutron/plannotator_argus/internal/config"
@@ -17,6 +20,12 @@ import (
 	"github.com/anutron/plannotator_argus/internal/mcp"
 	"github.com/anutron/plannotator_argus/internal/plannotator"
 )
+
+// SessionShutdownGrace bounds how long Stop waits for in-flight Plannotator
+// subprocesses to exit (after ctx cancel SIGKILLs them via exec.CommandContext).
+// Even SIGKILL'd processes need a moment for the kernel to deliver the signal
+// and for the Wait() goroutine to drain.
+const SessionShutdownGrace = 10 * time.Second
 
 // Daemon is the running instance.
 type Daemon struct {
@@ -29,15 +38,22 @@ type Daemon struct {
 	Registrar *mcp.Registrar
 	HookToken string
 
-	gcStop chan struct{}
-	gcWG   sync.WaitGroup
-	stopOnce sync.Once
+	parentCtx    context.Context
+	parentCancel context.CancelFunc
+	sessionWG    *sync.WaitGroup
+	gcStop       chan struct{}
+	gcWG         sync.WaitGroup
+	stopOnce     sync.Once
 }
 
 // Start brings the daemon up. Returns the running *Daemon, ready for Stop.
 func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, error) {
 	if cfg == nil {
-		cfg = config.Default()
+		var err error
+		cfg, err = config.Default()
+		if err != nil {
+			return nil, err
+		}
 	}
 	if log == nil {
 		log = slog.Default()
@@ -69,13 +85,18 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 		return nil, fmt.Errorf("auth header: %w", err)
 	}
 
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	sessionWG := &sync.WaitGroup{}
+
 	srv := mcp.NewServer(cfg.ListenAddr, authHeader, log)
 
 	deps := &mcp.HandlerDeps{
-		Runner:  runner,
-		Store:   store,
-		Log:     log,
-		URLPoll: 5 * time.Second,
+		Runner:    runner,
+		Store:     store,
+		Log:       log,
+		URLPoll:   5 * time.Second,
+		ParentCtx: parentCtx,
+		SessionWG: sessionWG,
 	}
 	srv.RegisterHandler("plannotator_annotate", mcp.AnnotateHandler(deps))
 	srv.RegisterHandler("plannotator_review", mcp.ReviewHandler(deps))
@@ -86,6 +107,7 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	srv.RegisterExtraRoute("/hook", hook.New(hookToken, runner, log).ServeHTTP)
 
 	if err := srv.Start(ctx); err != nil {
+		parentCancel()
 		return nil, fmt.Errorf("start mcp server: %w", err)
 	}
 
@@ -97,19 +119,23 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 	}
 	if err := registrar.Start(ctx); err != nil {
 		_ = srv.Stop()
+		parentCancel()
 		return nil, fmt.Errorf("register tools: %w", err)
 	}
 
 	d := &Daemon{
-		Cfg:       cfg,
-		Log:       log,
-		Argus:     client,
-		Runner:    runner,
-		Store:     store,
-		MCPServer: srv,
-		Registrar: registrar,
-		HookToken: hookToken,
-		gcStop:    make(chan struct{}),
+		Cfg:          cfg,
+		Log:          log,
+		Argus:        client,
+		Runner:       runner,
+		Store:        store,
+		MCPServer:    srv,
+		Registrar:    registrar,
+		HookToken:    hookToken,
+		parentCtx:    parentCtx,
+		parentCancel: parentCancel,
+		sessionWG:    sessionWG,
+		gcStop:       make(chan struct{}),
 	}
 	d.gcWG.Add(1)
 	go d.gcLoop()
@@ -122,11 +148,20 @@ func Start(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Daemon, 
 }
 
 // Stop tears the daemon down. Safe to call multiple times.
+//
+// Order matters: (1) cancel the parent context so exec.CommandContext
+// SIGKILLs in-flight Plannotator subprocesses; (2) wait for session
+// goroutines to join (bounded by SessionShutdownGrace); (3) stop the
+// GC loop; (4) unregister tools with argus; (5) shut the HTTP listener.
 func (d *Daemon) Stop(ctx context.Context) {
 	if d == nil {
 		return
 	}
 	d.stopOnce.Do(func() {
+		d.parentCancel()
+		if waited := waitWithTimeout(d.sessionWG, SessionShutdownGrace); !waited {
+			d.Log.Warn("session goroutines did not exit within grace", "grace", SessionShutdownGrace)
+		}
 		close(d.gcStop)
 		d.gcWG.Wait()
 		if d.Registrar != nil {
@@ -139,8 +174,8 @@ func (d *Daemon) Stop(ctx context.Context) {
 	})
 }
 
-// Run brings the daemon up, writes a pidfile, blocks until ctx is canceled,
-// then gracefully shuts down.
+// Run brings the daemon up, writes a pidfile (refusing to clobber a live
+// one), blocks until ctx is canceled, then gracefully shuts down.
 func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	d, err := Start(ctx, cfg, log)
 	if err != nil {
@@ -148,14 +183,59 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	}
 	defer d.Stop(context.Background())
 
-	pidPath := d.Cfg.PIDPath()
-	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644); err != nil {
-		log.Warn("write pidfile", "path", pidPath, "err", err)
+	if err := writePidfile(d.Cfg.PIDPath()); err != nil {
+		return fmt.Errorf("write pidfile: %w", err)
 	}
-	defer os.Remove(pidPath)
+	defer os.Remove(d.Cfg.PIDPath())
 
 	<-ctx.Done()
 	return nil
+}
+
+// writePidfile creates the PID file with O_EXCL so a concurrent start
+// doesn't clobber an existing daemon's PID. If a stale pidfile exists
+// (no process), it is removed and the write retried.
+func writePidfile(path string) error {
+	contents := []byte(strconv.Itoa(os.Getpid()) + "\n")
+	const flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL
+	f, err := os.OpenFile(path, flags, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		raw, readErr := os.ReadFile(path)
+		if readErr == nil {
+			if pid, atoiErr := strconv.Atoi(strings.TrimSpace(string(raw))); atoiErr == nil {
+				if proc, perr := os.FindProcess(pid); perr == nil {
+					if sigErr := proc.Signal(syscall.Signal(0)); sigErr == nil {
+						return fmt.Errorf("another plannotator-argus daemon is already running (pid=%d, pidfile=%s)", pid, path)
+					}
+				}
+			}
+		}
+		// Stale pidfile — remove and retry once.
+		if rmErr := os.Remove(path); rmErr != nil {
+			return fmt.Errorf("remove stale pidfile %s: %w", path, rmErr)
+		}
+		f, err = os.OpenFile(path, flags, 0o600)
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(contents)
+	return err
+}
+
+func waitWithTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 func (d *Daemon) gcLoop() {

@@ -120,13 +120,15 @@ func (r *Runner) Spawn(ctx context.Context, args []string) *exec.Cmd {
 
 // DiscoverSessionURL scans the sessions directory for a file matching the
 // given pid, polling up to `timeout`. Returns the URL Plannotator opened in
-// the browser, or "" if no session file appeared in time.
-func (r *Runner) DiscoverSessionURL(pid int, timeout time.Duration) string {
-	deadline := time.Now().Add(timeout)
+// the browser, or "" if no session file appeared in time or ctx was cancelled.
+func (r *Runner) DiscoverSessionURL(ctx context.Context, pid int, timeout time.Duration) string {
 	path := filepath.Join(r.SessionsDir, fmt.Sprintf("%d.json", pid))
-	for time.Now().Before(deadline) {
-		raw, err := os.ReadFile(path)
-		if err == nil {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if raw, err := os.ReadFile(path); err == nil {
 			var s struct {
 				URL string `json:"url"`
 			}
@@ -134,9 +136,14 @@ func (r *Runner) DiscoverSessionURL(pid int, timeout time.Duration) string {
 				return s.URL
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-timer.C:
+			return ""
+		case <-ticker.C:
+		}
 	}
-	return ""
 }
 
 // limitedBuffer caps how much it'll record. Used so a Plannotator misbehavior

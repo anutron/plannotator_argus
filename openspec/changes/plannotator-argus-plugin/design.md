@@ -100,7 +100,7 @@ The MCP tools take `cwd` from the calling argus task. Argus worktrees live at `/
 For each MCP tool:
 
 1. Sandboxed Claude calls `plannotator_annotate(cwd=$PWD, path="design.md")`.
-2. Daemon resolves `abspath = filepath.Join(cwd, path)`, with safety checks (must live under a known argus worktree prefix or under user's $HOME for ad-hoc URLs).
+2. Daemon resolves `abspath = filepath.Join(cwd, path)` and enforces that the resolved path is a descendant of `cwd` (with symlink resolution to catch escape via links). HTTP(S) URLs pass through unmodified.
 3. Daemon shells `plannotator annotate <abspath>`.
 
 **No bytes-in mode.** Inputs are paths or URLs. Plannotator already handles those natively; we don't re-implement file streaming.
@@ -160,7 +160,7 @@ Deferred to follow-up changes:
 - **`~/.plannotator/` write-blocked but expected to be readable from sandbox.** → Verify in testing. If reads also blocked, hook token moves to a daemon-side endpoint that exchanges a known argus task ID for a fresh token (more code, but doable).
 - **Token rotation has no graceful path.** → Same as Ludwig: revoking the scope token 401s the daemon, which logs and exits. User re-mints and restarts.
 - **Daemon restart drops in-flight session state.** → Acceptable. Annotation is human-driven; the human just re-triggers.
-- **Plannotator binary not on `$PATH` or not installed.** → Daemon fails health check on startup with explicit "Plannotator binary not found, set PLANNOTATOR_BIN" error.
+- **Plannotator binary not on `$PATH` or not installed.** → Daemon fails health check on startup with explicit "Plannotator binary not found, set PLANNOTATOR_BIN" error. The health check is `plannotator --version`; Plannotator's contract here is that `--version` returns exit 0. If a future Plannotator release renames or drops the flag, the daemon refuses to start until the contract is restored or the health check is loosened.
 - **MCP callback secret in process memory.** → Same as Ludwig — restart resets, re-registration carries new header. Trust scoped to a single-user machine.
 - **Plannotator output format changes underneath us.** → We pin to `--json` output and document the expected shape; output drift fails the parse cleanly with a clear error. Acceptable maintenance cost.
 - **Polling cadence vs. argus's callback budget.** → `plannotator_session_result` long-polls up to 25s per call; the agent typically wakes once and the session is done. Worst case: an idle agent polls every 25s for the duration of the annotation. Acceptable, well under argus's 30s ceiling.

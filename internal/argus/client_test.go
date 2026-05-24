@@ -102,6 +102,37 @@ func TestUnregisterToolIdempotent(t *testing.T) {
 	}
 }
 
+func TestRegisterTool500ReturnsBodySnippet(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"db down"}`))
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "tok")
+	err := c.RegisterTool(context.Background(), ToolRegistration{Name: "plannotator_x"})
+	if err == nil || !contains(err.Error(), "db down") {
+		t.Errorf("err = %v, want body snippet in error", err)
+	}
+}
+
+func TestRegisterToolNetworkError(t *testing.T) {
+	// 127.0.0.1:1 is reserved; the connect should fail immediately.
+	c := New("http://127.0.0.1:1", "tok")
+	err := c.RegisterTool(context.Background(), ToolRegistration{Name: "plannotator_x"})
+	if err == nil {
+		t.Error("expected network error")
+	}
+}
+
+func contains(haystack, needle string) bool {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
+}
+
 func TestUnregisterToolUnauthorized(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
