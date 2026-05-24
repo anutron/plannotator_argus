@@ -53,7 +53,7 @@ The daemon registers five MCP tools under the `plannotator_` prefix:
 - `plannotator_last(cwd)` — wraps `plannotator last`.
 - `plannotator_session_result(cwd, session_id, wait_seconds?)` — poll/long-poll for a session's completion result.
 
-The first four return a `{session_id, url, status: "pending"}` envelope within argus's 30-second callback window. The agent then polls `plannotator_session_result(session_id)` until it returns `{status: "complete", result: <annotations>}` or `{status: "cancelled" | "failed", error: <msg>}`.
+The first four return a `{session_id, url, status: "pending"}` envelope within argus's 30-second callback window. The agent then polls `plannotator_session_result(session_id)` until it returns `{status: "complete", result: <annotations>}` or `{status: "failed", error: <msg>}`.
 
 `plannotator_session_result` accepts a `wait_seconds` parameter (default 20, max 25, capped under argus's 30s ceiling). The handler blocks until the session resolves OR the deadline hits, then returns whatever state it has. Most annotations resolve in 1-2 polls.
 

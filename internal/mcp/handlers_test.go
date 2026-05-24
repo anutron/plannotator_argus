@@ -140,6 +140,26 @@ func TestLastHandler(t *testing.T) {
 	}
 }
 
+func TestAnnotateHandlerSpawnFailureSurfacesError(t *testing.T) {
+	deps, dir := newTestDeps(t)
+	// Point the runner at a non-executable path so cmd.Start() fails.
+	deps.Runner.BinaryPath = filepath.Join(dir, "does-not-exist")
+	_ = os.WriteFile(filepath.Join(dir, "doc.md"), []byte("# hi"), 0o600)
+
+	input := []byte(fmt.Sprintf(`{"cwd":%q,"path":"doc.md"}`, dir))
+	out, err := AnnotateHandler(deps).Handle(context.Background(), input)
+	if err == nil {
+		t.Fatalf("expected spawn error, got out=%v", out)
+	}
+	if !strings.Contains(err.Error(), "spawn plannotator") {
+		t.Errorf("err = %v, want contain spawn plannotator", err)
+	}
+	// Critically: no session should have been created.
+	if deps.Store.Len() != 0 {
+		t.Errorf("session store len = %d, want 0 after spawn failure", deps.Store.Len())
+	}
+}
+
 func TestSessionResultUnknownSession(t *testing.T) {
 	deps, dir := newTestDeps(t)
 	input := []byte(fmt.Sprintf(`{"cwd":%q,"session_id":"nope"}`, dir))

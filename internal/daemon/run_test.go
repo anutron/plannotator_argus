@@ -3,11 +3,13 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -245,6 +247,45 @@ sleep 60
 		if err := proc.Signal(syscall.Signal(0)); err == nil {
 			t.Errorf("subprocess pid %d still alive after Stop", childPID)
 		}
+	}
+}
+
+func TestWritePidfileRefusesLivePidfile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "argus-plugin.pid")
+	// Write current PID (definitely alive).
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := writePidfile(path)
+	if err == nil {
+		t.Fatal("expected refusal to clobber live pidfile")
+	}
+	if !strings.Contains(err.Error(), "already running") {
+		t.Errorf("err = %v, want 'already running' message", err)
+	}
+}
+
+func TestWritePidfileRemovesStalePidfile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "argus-plugin.pid")
+	// PID 1 is init/launchd; pick something guaranteed dead on macOS by
+	// using INT_MAX-ish that won't allocate. Use 99999999 which is way out
+	// of normal PID range on macOS (cap is 99998).
+	if err := os.WriteFile(path, []byte("99999999\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePidfile(path); err != nil {
+		t.Fatalf("expected stale pidfile to be recovered, got %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), fmt.Sprintf("%d", os.Getpid())) {
+		t.Errorf("pidfile not rewritten with current pid; got %q", raw)
+	}
+	// Mode must be 0600.
+	info, _ := os.Stat(path)
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, want 0600", info.Mode().Perm())
 	}
 }
 
