@@ -18,11 +18,14 @@ chmod 600 ~/.plannotator/argus-api-token
 # The daemon parses either the full `argus token mint` output or a single
 # bare token line — pipe the command's stdout verbatim.
 
-# Start the daemon
+# Start the daemon (foreground; Ctrl+C to stop)
 plannotator-argus start --foreground
+
+# OR install as a LaunchAgent (starts at login, restarts on crash)
+./deploy/install.sh
 ```
 
-The daemon registers five MCP tools (`plannotator_annotate`, `plannotator_review`, `plannotator_setup_goal`, `plannotator_last`, `plannotator_session_result`) and serves a `POST /hook` HTTP endpoint for ExitPlanMode hook integration.
+The daemon registers five MCP tools (`plannotator_annotate`, `plannotator_review`, `plannotator_setup_goal`, `plannotator_last`, `plannotator_session_result`) and serves a `POST /hook` HTTP endpoint for ExitPlanMode hook integration. With the LaunchAgent installed, stdout/stderr land at `~/.plannotator/argus-plugin.log`.
 
 ## Design
 

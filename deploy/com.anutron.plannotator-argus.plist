@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.anutron.plannotator-argus</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/aaron/.local/bin/plannotator-argus</string>
+        <string>start</string>
+        <string>--foreground</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/aaron/.plannotator</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/aaron</string>
+        <key>PATH</key>
+        <string>/Users/aaron/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key>
+        <true/>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/aaron/.plannotator/argus-plugin.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/aaron/.plannotator/argus-plugin.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
