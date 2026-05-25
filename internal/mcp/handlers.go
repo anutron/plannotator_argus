@@ -45,10 +45,14 @@ type sessionEnvelope struct {
 // the store, kicks off a background goroutine to handle the subprocess's
 // lifecycle, and returns the envelope.
 //
+// `cwd` is the calling task's worktree; the subprocess is run from there
+// so verbs that read $PWD (e.g. `plannotator review --git`) find the
+// expected git workspace.
+//
 // Spawn failures are surfaced as a tool error (so the agent gets isError:true)
 // rather than as a "failed session" envelope with no error field. A failed
 // spawn means no session ever existed — there's nothing to poll.
-func (d *HandlerDeps) startSession(ctx context.Context, verb string, args []string) (any, error) {
+func (d *HandlerDeps) startSession(ctx context.Context, verb, cwd string, args []string) (any, error) {
 	parent := d.ParentCtx
 	if parent == nil {
 		parent = context.Background()
@@ -57,6 +61,7 @@ func (d *HandlerDeps) startSession(ctx context.Context, verb string, args []stri
 	// so deriving from ParentCtx makes daemon shutdown reach every
 	// in-flight subprocess.
 	cmd := d.Runner.Spawn(parent, args)
+	cmd.Dir = cwd
 	stdout := &capturedBuffer{cap: 8 << 20}
 	stderr := &capturedBuffer{cap: 8 << 20}
 	cmd.Stdout = stdout
@@ -148,7 +153,7 @@ func AnnotateHandler(deps *HandlerDeps) Handler {
 		if err != nil {
 			return nil, fmt.Errorf("resolve path: %w", err)
 		}
-		return deps.startSession(ctx, "annotate", []string{"annotate", resolved, "--json"})
+		return deps.startSession(ctx, "annotate", p.Cwd, []string{"annotate", resolved, "--json"})
 	})
 }
 
@@ -173,7 +178,7 @@ func ReviewHandler(deps *HandlerDeps) Handler {
 		if p.PRURL != "" {
 			args = append(args, p.PRURL)
 		}
-		return deps.startSession(ctx, "review", args)
+		return deps.startSession(ctx, "review", p.Cwd, args)
 	})
 }
 
@@ -201,7 +206,7 @@ func SetupGoalHandler(deps *HandlerDeps) Handler {
 		if err != nil {
 			return nil, fmt.Errorf("resolve bundle_path: %w", err)
 		}
-		return deps.startSession(ctx, "setup-goal", []string{"setup-goal", p.Mode, resolved})
+		return deps.startSession(ctx, "setup-goal", p.Cwd, []string{"setup-goal", p.Mode, resolved})
 	})
 }
 
@@ -217,7 +222,7 @@ func LastHandler(deps *HandlerDeps) Handler {
 		if p.Cwd == "" {
 			return nil, fmt.Errorf("cwd is required")
 		}
-		return deps.startSession(ctx, "last", []string{"last"})
+		return deps.startSession(ctx, "last", p.Cwd, []string{"last"})
 	})
 }
 

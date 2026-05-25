@@ -204,6 +204,11 @@ The daemon SHALL resolve `path` arguments by joining with `cwd` and SHALL reject
 - **WHEN** Claude calls any verb tool with `cwd=""`
 - **THEN** the daemon returns a tool error and does not spawn a subprocess
 
+#### Scenario: Subprocess runs from the caller's cwd
+
+- **WHEN** the daemon spawns Plannotator for any verb
+- **THEN** the subprocess's working directory is set to the calling task's `cwd` (not the daemon's own working directory), so verbs that read `$PWD` (e.g. `plannotator review --git`) find the expected workspace
+
 ### Requirement: Session lifecycle and garbage collection
 
 The daemon SHALL hold session state in process memory only, garbage-collect completed sessions after their TTL, and lose all in-flight session state on restart.
