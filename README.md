@@ -93,6 +93,27 @@ Wire it into `~/.claude/settings.json`:
 
 Same rationale as the ExitPlanMode hook above: `~/.claude/settings.json` is operator-owned and survives Plannotator installer refreshes. The guard does not match `plannotator --version`, `plannotator-argus`, or `plannotator-hook` — it only fires on the four verb invocations the skills generate.
 
+## Argus reconnection
+
+The daemon resolves argus's plugin-API base URL at startup with a deterministic precedence:
+
+1. `PLANNOTATOR_ARGUS_BASE_URL` env var, if set, wins unconditionally.
+2. Otherwise argus's `Daemon.Ports` RPC (JSON-RPC over `~/.argus/daemon.sock`) is queried with a 500 ms timeout.
+3. Otherwise the hardcoded fallback `http://127.0.0.1:7743` is used.
+
+Discovery is best-effort: any failure (socket missing, RPC error, timeout, malformed response) falls through to the next step without logging at error level. The daemon never refuses to start because discovery returned nothing.
+
+After startup, the heartbeat loop (default 5-minute interval, configurable via `PLANNOTATOR_MCP_HEARTBEAT`) classifies each registration round:
+
+- **HTTP 200/201** – resets failure tracking.
+- **HTTP 401** – fatal immediately; the scope token has been revoked or rotated.
+- **HTTP 5xx or non-401 4xx** – logged as a warning; argus is reachable but responding poorly, so we keep heartbeating on the normal cadence.
+- **Transport failure** (connection refused, DNS, timeout, EOF) – a single fast retry is scheduled 30 seconds later. If that retry also fails, the daemon exits non-zero.
+
+On fatal exit, launchd's `KeepAlive.SuccessfulExit=false` (with `ThrottleInterval=60`) restarts the daemon, which re-runs discovery and picks up argus's new plugin-API URL automatically. Worst-case outage after an `argus restart` is bounded by the heartbeat interval plus 30 s plus the launchd throttle (under two minutes with defaults).
+
+To pin the daemon to a specific argus instance and skip discovery entirely, set `PLANNOTATOR_ARGUS_BASE_URL` in the launchd plist's `EnvironmentVariables`.
+
 ## Design
 
 See `openspec/changes/plannotator-argus-plugin/design.md`.

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -21,10 +22,10 @@ import (
 // stubArgus returns an httptest.Server that records registration and
 // unregistration calls.
 type stubArgus struct {
-	mu       sync.Mutex
-	posts    []string
-	deletes  []string
-	server   *httptest.Server
+	mu      sync.Mutex
+	posts   []string
+	deletes []string
+	server  *httptest.Server
 }
 
 func newStubArgus(t *testing.T) *stubArgus {
@@ -300,5 +301,48 @@ func TestDaemonFailsFastOn401(t *testing.T) {
 	_, err := Start(context.Background(), cfg, nil)
 	if err == nil {
 		t.Fatal("expected fail-fast on 401")
+	}
+}
+
+// TestRunPropagatesFatalHeartbeatError exercises the Run loop: a stub argus
+// that returns 200 on the initial registration but 401 on every subsequent
+// call drives the heartbeat into the unauthorized-fatal branch. Run must
+// return a non-nil error so the CLI exits non-zero and launchd restarts the
+// daemon.
+func TestRunPropagatesFatalHeartbeatError(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Allow 5 initial registrations (one per tool definition) to
+		// succeed so Start passes; everything afterward returns 401 to
+		// trip the heartbeat into the fatal branch.
+		n := calls.Add(1)
+		if r.Method == http.MethodPost && n <= 5 {
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	bin := writePlannotatorStub(t)
+	cfg := setupCfg(t, srv.URL, bin)
+	cfg.MCPHeartbeat = 50 * time.Millisecond // fast tick → fast fatal
+
+	done := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		done <- Run(ctx, cfg, nil)
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Run returned nil; want non-nil fatal error")
+		}
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("Run did not return within 5s after fatal heartbeat")
 	}
 }

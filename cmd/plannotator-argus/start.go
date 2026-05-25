@@ -35,6 +35,13 @@ func newStartCmd() *cobra.Command {
 
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
+			// daemon.Run returns a non-nil error on fatal heartbeat
+			// failure (sustained transport failure or HTTP 401 from
+			// argus). Cobra-with-SilenceErrors and main's os.Exit(1)
+			// fall-through propagate that into a non-zero process exit
+			// code, which is what launchd's KeepAlive.SuccessfulExit=false
+			// keys off to restart the daemon onto a freshly discovered
+			// argus URL.
 			return daemon.Run(ctx, cfg, log)
 		},
 	}
