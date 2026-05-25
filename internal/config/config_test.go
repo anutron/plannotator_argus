@@ -127,6 +127,59 @@ func TestLoadOrCreateHookTokenCreatesOnce(t *testing.T) {
 	}
 }
 
+func TestLoadScopeTokenFromMintOutput(t *testing.T) {
+	// Verbatim shape of `argus token mint --scope plannotator` output.
+	mint := `id:    2
+scope: plannotator
+label: plannotator
+token: 9ecf80bdd44b6f0d6152c9850adbec5a8cb374073514ad77aeb90c41fe9a9687
+
+Store this token now — it will not be shown again.
+`
+	dir := t.TempDir()
+	c := mustDefault(t)
+	c.ArgusTokenPath = filepath.Join(dir, "token")
+	if err := os.WriteFile(c.ArgusTokenPath, []byte(mint), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tok, err := c.LoadScopeToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "9ecf80bdd44b6f0d6152c9850adbec5a8cb374073514ad77aeb90c41fe9a9687"
+	if tok != want {
+		t.Errorf("got %q, want %q", tok, want)
+	}
+}
+
+func TestLoadScopeTokenMultilineWithoutTokenLineRejected(t *testing.T) {
+	dir := t.TempDir()
+	c := mustDefault(t)
+	c.ArgusTokenPath = filepath.Join(dir, "token")
+	// Multi-line content with no `token:` line — must be rejected so we
+	// don't ship a bearer string that contains embedded newlines.
+	if err := os.WriteFile(c.ArgusTokenPath, []byte("abc\ndef\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := c.LoadScopeToken()
+	if err == nil {
+		t.Error("expected error for whitespace-bearing token")
+	}
+}
+
+func TestLoadScopeTokenRejectsNonPrintable(t *testing.T) {
+	dir := t.TempDir()
+	c := mustDefault(t)
+	c.ArgusTokenPath = filepath.Join(dir, "token")
+	if err := os.WriteFile(c.ArgusTokenPath, []byte("token: abc\x01def\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := c.LoadScopeToken()
+	if err == nil {
+		t.Error("expected error for non-printable byte in token")
+	}
+}
+
 func TestLoadOrCreateHookTokenMissingDir(t *testing.T) {
 	c := mustDefault(t)
 	c.HookTokenPath = "/nonexistent/dir/hook-token"

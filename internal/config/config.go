@@ -99,8 +99,10 @@ func (c *Config) LoadFromEnv() error {
 	return nil
 }
 
-// LoadScopeToken reads the argus scope token from disk. Returns an error
-// with a suggested fix if the file is missing or empty.
+// LoadScopeToken reads the argus scope token from disk. Accepts either a
+// bare token (single line) or the full `argus token mint` output (multi-line
+// metadata with a `token: <hex>` line). Returns an error with a suggested
+// fix if the file is missing, empty, or doesn't contain a parseable token.
 func (c *Config) LoadScopeToken() (string, error) {
 	raw, err := os.ReadFile(c.ArgusTokenPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -109,11 +111,59 @@ func (c *Config) LoadScopeToken() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read scope token %s: %w", c.ArgusTokenPath, err)
 	}
-	tok := strings.TrimSpace(string(raw))
-	if tok == "" {
-		return "", fmt.Errorf("scope token file %s is empty", c.ArgusTokenPath)
+	tok, err := parseScopeToken(string(raw))
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", c.ArgusTokenPath, err)
 	}
 	return tok, nil
+}
+
+// parseScopeToken extracts a token from either a bare-token file or the
+// full `argus token mint` output. The mint command's output looks like:
+//
+//	id:    7
+//	scope: plannotator
+//	label: plannotator
+//	token: 9ecf80bdd44b6f0d...
+//
+//	Store this token now ...
+//
+// If a `token: <value>` line is present, its value is returned. Otherwise
+// the whole content is trimmed and validated as a single token.
+func parseScopeToken(raw string) (string, error) {
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		const prefix = "token:"
+		if strings.HasPrefix(strings.ToLower(line), prefix) {
+			val := strings.TrimSpace(line[len(prefix):])
+			if val != "" {
+				return val, validateTokenBytes(val)
+			}
+		}
+	}
+	tok := strings.TrimSpace(raw)
+	if tok == "" {
+		return "", fmt.Errorf("scope token file is empty")
+	}
+	// Reject multi-line / whitespace-bearing content that isn't `argus token
+	// mint` output — it would break HTTP header encoding downstream.
+	if strings.ContainsAny(tok, " \t\n\r") {
+		return "", fmt.Errorf("scope token contains whitespace and no `token: <value>` line found — paste only the token, or pipe the full `argus token mint` output verbatim")
+	}
+	return tok, validateTokenBytes(tok)
+}
+
+// validateTokenBytes rejects tokens that contain bytes Go's net/http will
+// refuse in a header value. Argus tokens are hex strings so the realistic
+// failure mode is hidden control characters from a botched copy/paste.
+func validateTokenBytes(tok string) error {
+	for i := 0; i < len(tok); i++ {
+		b := tok[i]
+		if b < 0x20 || b > 0x7e {
+			return fmt.Errorf("token contains non-printable byte 0x%02x at offset %d", b, i)
+		}
+	}
+	return nil
 }
 
 // LoadOrCreateHookToken returns the hook-endpoint bearer token, creating it

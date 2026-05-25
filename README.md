@@ -15,6 +15,8 @@ cp ./bin/plannotator-argus ~/.local/bin/
 # One-time setup
 argus token mint --scope plannotator > ~/.plannotator/argus-api-token
 chmod 600 ~/.plannotator/argus-api-token
+# The daemon parses either the full `argus token mint` output or a single
+# bare token line — pipe the command's stdout verbatim.
 
 # Start the daemon
 plannotator-argus start --foreground

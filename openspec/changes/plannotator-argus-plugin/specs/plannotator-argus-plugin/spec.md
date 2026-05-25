@@ -155,6 +155,16 @@ The daemon SHALL use a per-process random secret to authenticate MCP callbacks a
 - **WHEN** the daemon starts and `~/.plannotator/argus-plugin-token` already exists
 - **THEN** the daemon reads the existing token and does NOT overwrite the file
 
+#### Scenario: Scope token accepts raw `argus token mint` output
+
+- **WHEN** the scope token file contains the verbatim multi-line output of `argus token mint --scope plannotator` (including `id:`, `scope:`, `label:`, `token: <value>`, and trailing prose)
+- **THEN** the daemon extracts the `token: <value>` line and uses it as the bearer secret
+
+#### Scenario: Scope token rejected when it would corrupt HTTP headers
+
+- **WHEN** the scope token contains a byte outside the printable ASCII range (e.g., embedded newline or NUL) and no `token: <value>` line is present
+- **THEN** the daemon refuses to start and surfaces an error pointing at the offending byte or whitespace
+
 ### Requirement: Path resolution and safety
 
 The daemon SHALL resolve `path` arguments by joining with `cwd` and SHALL reject paths that escape the calling task's worktree via `..` traversal. HTTP and HTTPS URLs are passed through unmodified.
