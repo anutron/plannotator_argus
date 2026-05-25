@@ -64,6 +64,35 @@ Why this location:
 
 The upstream installer also wires a `PreToolUse: EnterPlanMode → plannotator improve-context` pre-hook. The daemon's `/hook` endpoint only handles the no-args ExitPlanMode flow, so the wrapper has nothing to do with `improve-context` — leave that pre-hook out unless and until the daemon grows an endpoint for it.
 
+## Forcing the MCP path for plannotator inside argus
+
+The upstream Plannotator skills (`/plannotator-annotate`, `/plannotator-review`, `/plannotator-last`, `/plannotator-setup-goal`) instruct Claude to call `Bash(plannotator <verb> ...)` directly. Inside an argus task sandbox that EPERMs on the session-file write — the daemon's MCP tools are the only working path. The skills can't be patched in place because the Plannotator installer refreshes them.
+
+`./deploy/install.sh` ships a second helper, `~/.local/bin/plannotator-bash-guard`, intended as a `PreToolUse(Bash)` hook. It inspects each Bash invocation, and when (a) the command directly runs `plannotator annotate|review|last|setup-goal` AND (b) `$PWD` is under `~/.argus/worktrees/`, it denies the call with a verb-specific message telling Claude exactly which `mcp__argus__plannotator_*` tool to use instead. Anywhere outside an argus worktree the guard is a silent no-op, so the same hook is safe on the host shell.
+
+Wire it into `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/aaron/.local/bin/plannotator-bash-guard",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Same rationale as the ExitPlanMode hook above: `~/.claude/settings.json` is operator-owned and survives Plannotator installer refreshes. The guard does not match `plannotator --version`, `plannotator-argus`, or `plannotator-hook` — it only fires on the four verb invocations the skills generate.
+
 ## Design
 
 See `openspec/changes/plannotator-argus-plugin/design.md`.
