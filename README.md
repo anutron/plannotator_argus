@@ -27,6 +27,10 @@ plannotator-argus start --foreground
 
 The daemon registers five MCP tools (`plannotator_annotate`, `plannotator_review`, `plannotator_setup_goal`, `plannotator_last`, `plannotator_session_result`) and serves a `POST /hook` HTTP endpoint for ExitPlanMode hook integration. With the LaunchAgent installed, stdout/stderr land at `~/.plannotator/argus-plugin.log`.
 
+## Hook wrapper
+
+`./deploy/install.sh` also installs `~/.local/bin/plannotator-hook`, a small bash wrapper that routes Claude Code stop-hook payloads through the daemon when reachable and falls back to invoking `plannotator` directly when it isn't. The wrapper is environment-invariant — point your existing hook config at `plannotator-hook` instead of `plannotator` and ExitPlanMode behaves identically inside and outside argus task sandboxes. Overridable via `PLANNOTATOR_HOOK_URL`, `PLANNOTATOR_HOOK_TOKEN`, `PLANNOTATOR_HOOK_TIMEOUT`.
+
 ## Design
 
 See `openspec/changes/plannotator-argus-plugin/design.md`.

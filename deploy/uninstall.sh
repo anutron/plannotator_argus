@@ -17,4 +17,10 @@ if [[ -f "$PLIST_DST" ]]; then
     echo "removed $PLIST_DST"
 fi
 
+HOOK_DST="$HOME/.local/bin/plannotator-hook"
+if [[ -f "$HOOK_DST" ]]; then
+    rm -f "$HOOK_DST"
+    echo "removed $HOOK_DST"
+fi
+
 echo "done."

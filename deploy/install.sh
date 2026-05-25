@@ -26,6 +26,18 @@ fi
 
 mkdir -p "$HOME/Library/LaunchAgents"
 mkdir -p "$HOME/.plannotator"
+mkdir -p "$HOME/.local/bin"
+
+# Install the hook wrapper so ExitPlanMode / other plannotator hook callers
+# can route through the daemon (when reachable) and fall back to direct
+# plannotator otherwise.
+HOOK_SRC="$(cd "$(dirname "$0")" && pwd)/plannotator-hook.sh"
+HOOK_DST="$HOME/.local/bin/plannotator-hook"
+if [[ -f "$HOOK_SRC" ]]; then
+    cp "$HOOK_SRC" "$HOOK_DST"
+    chmod 0755 "$HOOK_DST"
+    echo "installed $HOOK_DST"
+fi
 
 # If already loaded, unload first so we pick up plist changes.
 if launchctl print "$SERVICE_TARGET" >/dev/null 2>&1; then
