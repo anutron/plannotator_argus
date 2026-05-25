@@ -23,4 +23,10 @@ if [[ -f "$HOOK_DST" ]]; then
     echo "removed $HOOK_DST"
 fi
 
+GUARD_DST="$HOME/.local/bin/plannotator-bash-guard"
+if [[ -f "$GUARD_DST" ]]; then
+    rm -f "$GUARD_DST"
+    echo "removed $GUARD_DST"
+fi
+
 echo "done."

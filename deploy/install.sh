@@ -39,6 +39,17 @@ if [[ -f "$HOOK_SRC" ]]; then
     echo "installed $HOOK_DST"
 fi
 
+# Install the PreToolUse(Bash) guard that forces the MCP path for plannotator
+# verb invocations inside argus task sandboxes. Wire it into Claude Code via
+# ~/.claude/settings.json — see README for the stanza.
+GUARD_SRC="$(cd "$(dirname "$0")" && pwd)/plannotator-bash-guard.sh"
+GUARD_DST="$HOME/.local/bin/plannotator-bash-guard"
+if [[ -f "$GUARD_SRC" ]]; then
+    cp "$GUARD_SRC" "$GUARD_DST"
+    chmod 0755 "$GUARD_DST"
+    echo "installed $GUARD_DST"
+fi
+
 # If already loaded, unload first so we pick up plist changes.
 if launchctl print "$SERVICE_TARGET" >/dev/null 2>&1; then
     echo "unloading existing $LABEL..."
