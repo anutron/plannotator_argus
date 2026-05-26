@@ -19,9 +19,29 @@ import (
 // major version.
 const PluginVersion = "1"
 
-// ErrUnauthorized is returned when argus replies 401 — typically a revoked
+// ErrUnauthorized is returned when argus replies 401 – typically a revoked
 // or invalid scope token. Callers fail fast on this.
 var ErrUnauthorized = errors.New("argus: unauthorized (check scope token)")
+
+// HTTPError is returned when argus replies with a non-success HTTP status
+// other than 401. It carries the status code and a short body snippet so
+// callers (notably the heartbeat classifier) can distinguish HTTP-level
+// failures from transport-level failures returned by http.Client.Do.
+//
+// A 401 is special-cased to ErrUnauthorized for backward compatibility and
+// because the heartbeat treats it as fatal.
+type HTTPError struct {
+	Status  int
+	Snippet string
+	Op      string // short label, e.g. "register tool plannotator_x"
+}
+
+func (e *HTTPError) Error() string {
+	if e.Snippet == "" {
+		return fmt.Sprintf("%s: status %d", e.Op, e.Status)
+	}
+	return fmt.Sprintf("%s: status %d: %s", e.Op, e.Status, e.Snippet)
+}
 
 // Client is the HTTP client for argus's plugin API.
 type Client struct {
@@ -73,7 +93,11 @@ func (c *Client) RegisterTool(ctx context.Context, reg ToolRegistration) error {
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("register tool %s: status %d: %s", reg.Name, resp.StatusCode, string(snippet))
+		return &HTTPError{
+			Status:  resp.StatusCode,
+			Snippet: string(snippet),
+			Op:      fmt.Sprintf("register tool %s", reg.Name),
+		}
 	}
 	return nil
 }
@@ -98,7 +122,11 @@ func (c *Client) UnregisterTool(ctx context.Context, name string) error {
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("unregister tool %s: status %d: %s", name, resp.StatusCode, string(snippet))
+		return &HTTPError{
+			Status:  resp.StatusCode,
+			Snippet: string(snippet),
+			Op:      fmt.Sprintf("unregister tool %s", name),
+		}
 	}
 	return nil
 }

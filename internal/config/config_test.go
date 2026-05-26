@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,8 +9,23 @@ import (
 	"time"
 )
 
+// withDiscovery swaps the package-level discovery seam for the duration of
+// a test. Returns a restore func registered on t.Cleanup. Tests use this
+// instead of standing up a real fake daemon for every assertion about
+// Default()'s wiring.
+func withDiscovery(t *testing.T, fn func(ctx context.Context, timeout time.Duration) (string, bool)) {
+	t.Helper()
+	old := discoverArgusBaseURL
+	discoverArgusBaseURL = fn
+	t.Cleanup(func() { discoverArgusBaseURL = old })
+}
+
 func mustDefault(t *testing.T) *Config {
 	t.Helper()
+	// Stub discovery off by default so test runs on hosts with a live
+	// argus daemon don't make real RPC calls during config tests that
+	// don't care about ArgusBaseURL.
+	withDiscovery(t, func(context.Context, time.Duration) (string, bool) { return "", false })
 	c, err := Default()
 	if err != nil {
 		t.Fatal(err)
@@ -18,6 +34,10 @@ func mustDefault(t *testing.T) *Config {
 }
 
 func TestDefault(t *testing.T) {
+	// Stub discovery out so this baseline test does not depend on whether
+	// a real argus daemon socket happens to be present on the host.
+	withDiscovery(t, func(context.Context, time.Duration) (string, bool) { return "", false })
+	t.Setenv("PLANNOTATOR_ARGUS_BASE_URL", "")
 	c := mustDefault(t)
 	if c.ArgusBaseURL == "" || !strings.HasPrefix(c.ArgusBaseURL, "http") {
 		t.Errorf("ArgusBaseURL bad: %q", c.ArgusBaseURL)
@@ -30,6 +50,91 @@ func TestDefault(t *testing.T) {
 	}
 	if c.SessionTTL != 10*time.Minute {
 		t.Errorf("SessionTTL = %v, want 10m", c.SessionTTL)
+	}
+}
+
+// TestDefault_DiscoveryFailureFallsBack covers spec scenarios "Daemon.Ports
+// discovery is unavailable, falls back to default" and "Discovery failure
+// is not fatal". When the env var is unset and discovery returns ok=false,
+// Default must populate the hardcoded fallback URL and not error.
+func TestDefault_DiscoveryFailureFallsBack(t *testing.T) {
+	t.Setenv("PLANNOTATOR_ARGUS_BASE_URL", "")
+	withDiscovery(t, func(context.Context, time.Duration) (string, bool) { return "", false })
+
+	c, err := Default()
+	if err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	if c.ArgusBaseURL != "http://127.0.0.1:7743" {
+		t.Errorf("ArgusBaseURL = %q, want hardcoded fallback http://127.0.0.1:7743", c.ArgusBaseURL)
+	}
+}
+
+// TestDefault_DiscoverySuccess covers spec scenario "Daemon.Ports
+// discovery succeeds". When the env var is unset and discovery returns a
+// URL, Default must use it.
+func TestDefault_DiscoverySuccess(t *testing.T) {
+	t.Setenv("PLANNOTATOR_ARGUS_BASE_URL", "")
+	withDiscovery(t, func(context.Context, time.Duration) (string, bool) {
+		return "http://127.0.0.1:7841", true
+	})
+
+	c, err := Default()
+	if err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	if c.ArgusBaseURL != "http://127.0.0.1:7841" {
+		t.Errorf("ArgusBaseURL = %q, want discovered http://127.0.0.1:7841", c.ArgusBaseURL)
+	}
+}
+
+// TestDefault_EnvOverrideSkipsDiscovery covers spec scenario "Env override
+// wins unconditionally". When PLANNOTATOR_ARGUS_BASE_URL is set, Default
+// must not invoke discovery at all, and LoadFromEnv must then copy the
+// env value onto the Config.
+func TestDefault_EnvOverrideSkipsDiscovery(t *testing.T) {
+	t.Setenv("PLANNOTATOR_ARGUS_BASE_URL", "http://127.0.0.1:9999")
+
+	discoveryCalled := false
+	withDiscovery(t, func(context.Context, time.Duration) (string, bool) {
+		discoveryCalled = true
+		return "http://127.0.0.1:7841", true
+	})
+
+	c, err := Default()
+	if err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	if discoveryCalled {
+		t.Errorf("discovery was called despite env override")
+	}
+	// Default leaves the fallback URL on the struct; LoadFromEnv applies
+	// the override. Together they match the operator's pin.
+	if err := c.LoadFromEnv(); err != nil {
+		t.Fatalf("LoadFromEnv: %v", err)
+	}
+	if c.ArgusBaseURL != "http://127.0.0.1:9999" {
+		t.Errorf("ArgusBaseURL after LoadFromEnv = %q, want http://127.0.0.1:9999", c.ArgusBaseURL)
+	}
+}
+
+// TestDefault_DiscoveryBoundedByTimeout verifies the discovery seam is
+// invoked with the spec-mandated 500 ms timeout so callers cannot
+// inadvertently widen the startup-blocking window.
+func TestDefault_DiscoveryBoundedByTimeout(t *testing.T) {
+	t.Setenv("PLANNOTATOR_ARGUS_BASE_URL", "")
+
+	var gotTimeout time.Duration
+	withDiscovery(t, func(_ context.Context, timeout time.Duration) (string, bool) {
+		gotTimeout = timeout
+		return "", false
+	})
+
+	if _, err := Default(); err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	if gotTimeout != 500*time.Millisecond {
+		t.Errorf("discovery timeout = %v, want 500ms", gotTimeout)
 	}
 }
 

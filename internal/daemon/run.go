@@ -175,8 +175,18 @@ func (d *Daemon) Stop(ctx context.Context) {
 }
 
 // Run brings the daemon up, writes a pidfile (refusing to clobber a live
-// one), blocks until ctx is canceled, then gracefully shuts down.
+// one), blocks until either ctx is canceled or the registrar reports a
+// fatal heartbeat failure, then gracefully shuts down.
+//
+// A fatal heartbeat failure causes Run to return the underlying error so
+// the CLI can propagate a non-zero exit code; launchd then restarts the
+// daemon (its plist has KeepAlive.SuccessfulExit=false with a 60-second
+// ThrottleInterval) so the next process can re-run URL discovery and pick
+// up argus on its new port.
 func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
+	if log == nil {
+		log = slog.Default()
+	}
 	d, err := Start(ctx, cfg, log)
 	if err != nil {
 		return err
@@ -188,8 +198,21 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	}
 	defer os.Remove(d.Cfg.PIDPath())
 
-	<-ctx.Done()
-	return nil
+	var fatalCh <-chan error
+	if d.Registrar != nil {
+		fatalCh = d.Registrar.Fatal()
+	}
+	select {
+	case <-ctx.Done():
+		return nil
+	case fatalErr, ok := <-fatalCh:
+		if !ok || fatalErr == nil {
+			// Channel closed or sent nil; treat as normal exit.
+			return nil
+		}
+		log.Error("fatal heartbeat failure; exiting for launchd restart", "err", fatalErr)
+		return fatalErr
+	}
 }
 
 // writePidfile creates the PID file with O_EXCL so a concurrent start

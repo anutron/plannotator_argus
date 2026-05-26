@@ -4,6 +4,7 @@
 package config
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -12,24 +13,57 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/anutron/plannotator_argus/internal/argus"
 )
+
+// discoveryTimeout bounds the `Daemon.Ports` RPC attempt during Default()
+// so an unreachable argus daemon socket cannot noticeably slow startup.
+// Spec: "Discovery is bounded by a short timeout" (500 ms).
+const discoveryTimeout = 500 * time.Millisecond
+
+// fallbackArgusBaseURL is the hardcoded last-resort URL used when no env
+// override is set and `Daemon.Ports` discovery fails. Matches argus's own
+// historical default (`api.HTTPPort` -> 7743 when the API config is left
+// at zero).
+const fallbackArgusBaseURL = "http://127.0.0.1:7743"
+
+// discoverArgusBaseURL is the discovery seam Default() uses. Tests replace
+// it to drive the env-override / discovery-success / discovery-failure
+// branches without standing up a real fake daemon for every case. The
+// default implementation calls `argus.Discover`.
+var discoverArgusBaseURL = func(ctx context.Context, timeout time.Duration) (string, bool) {
+	return argus.Discover(ctx, timeout)
+}
 
 // Config is the daemon configuration. All fields have working defaults; the
 // only thing the operator must provide is the argus scope token file.
 type Config struct {
-	ArgusBaseURL    string
-	PlannotatorBin  string // empty = "plannotator" on $PATH
-	ArgusTokenPath  string
-	HookTokenPath   string
-	StateDir        string
-	ListenAddr      string
-	MCPHeartbeat    time.Duration
-	SessionTTL      time.Duration
+	ArgusBaseURL   string
+	PlannotatorBin string // empty = "plannotator" on $PATH
+	ArgusTokenPath string
+	HookTokenPath  string
+	StateDir       string
+	ListenAddr     string
+	MCPHeartbeat   time.Duration
+	SessionTTL     time.Duration
 }
 
 // Default returns a Config populated with v1 defaults. Errors only if
 // the user's home directory can't be resolved (extremely rare; would
 // otherwise silently relocate the daemon's state to the cwd).
+//
+// Argus base URL resolution follows a deterministic precedence:
+//  1. `PLANNOTATOR_ARGUS_BASE_URL` env override wins unconditionally and
+//     short-circuits discovery; `LoadFromEnv` later copies it onto the
+//     Config struct, so we leave the field at the hardcoded default here
+//     and let the env path overwrite it.
+//  2. Otherwise we call `argus.Discover` (bounded by `discoveryTimeout`)
+//     to read argus's live API port from its `Daemon.Ports` RPC.
+//  3. On any discovery failure (socket missing, RPC error, malformed
+//     response, timeout) we fall through to `fallbackArgusBaseURL`. The
+//     failure is silent at error level — discovery is best-effort per
+//     the spec.
 func Default() (*Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -39,8 +73,20 @@ func Default() (*Config, error) {
 		return nil, fmt.Errorf("resolve home dir: $HOME is unset")
 	}
 	stateDir := filepath.Join(home, ".plannotator")
+
+	baseURL := fallbackArgusBaseURL
+	// Only attempt discovery when the env override is unset. The env path
+	// must win unconditionally per the "Env override wins unconditionally"
+	// spec scenario, and the cheapest way to honor that is to skip
+	// discovery entirely when the operator has pinned the URL.
+	if os.Getenv("PLANNOTATOR_ARGUS_BASE_URL") == "" {
+		if url, ok := discoverArgusBaseURL(context.Background(), discoveryTimeout); ok {
+			baseURL = url
+		}
+	}
+
 	return &Config{
-		ArgusBaseURL:   "http://127.0.0.1:7743",
+		ArgusBaseURL:   baseURL,
 		PlannotatorBin: "",
 		ArgusTokenPath: filepath.Join(stateDir, "argus-api-token"),
 		HookTokenPath:  filepath.Join(stateDir, "argus-plugin-token"),
