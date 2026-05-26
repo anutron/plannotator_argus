@@ -44,7 +44,7 @@
 - [x] 6.1 Unit tests pass: `go test ./...`
 - [ ] 6.2 Smoke test on host: start daemon, `argus stop`, observe fast-retry log line within 30 s of next heartbeat, observe exit on second failure
 - [ ] 6.3 Smoke test on host: with daemon down and `argus start` (potentially on new port), confirm launchd restart and successful re-registration via `Daemon.Ports`
-- [ ] 6.4 Confirm operator override still works: `PLANNOTATOR_ARGUS_BASE_URL=http://127.0.0.1:9999 plannotator-argus start --foreground` skips discovery and fails on a bad URL as expected
+- [x] 6.4 Confirm operator override still works: `PLANNOTATOR_ARGUS_BASE_URL=http://127.0.0.1:9999 plannotator-argus start --foreground` skips discovery and fails on a bad URL as expected
 - [ ] 6.5 Confirm fatal-on-401 surfaces a clear log line and the launchd loop is visible in `/Users/aaron/.plannotator/argus-plugin.log`
 
 Tasks 6.2-6.5 are host-level smoke tests that cannot be run from inside an argus task sandbox (the daemon process and launchd interaction live on the host). They are parked for the operator to run post-merge after rebuilding local argus with PR #630.
