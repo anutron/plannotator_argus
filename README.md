@@ -114,6 +114,33 @@ On fatal exit, launchd's `KeepAlive.SuccessfulExit=false` (with `ThrottleInterva
 
 To pin the daemon to a specific argus instance and skip discovery entirely, set `PLANNOTATOR_ARGUS_BASE_URL` in the launchd plist's `EnvironmentVariables`.
 
+## Agent-facing skill
+
+The daemon registers the MCP tools, but a fresh Claude session inside an argus task worktree sees them only as bare `mcp__argus__plannotator_*` names. It doesn't know it's sandboxed, that the verb tools are async (poll for the result), that direct `plannotator <verb>` calls EPERM, or how the plugin composes with sibling plugins (`iris`, `hera`). The agent-facing skill is the proactive orientation layer that teaches all of that.
+
+Install it (and an optional always-loaded CLAUDE.md snippet) into `~/.claude/`:
+
+```bash
+./install-claude-skills.sh        # prompts (Y/n) to symlink the skill and (Y/n) to append the snippet
+./install-claude-skills.sh -y     # assume yes to both, non-interactively
+./uninstall-claude-skills.sh      # reverses both, idempotently
+```
+
+The installer prompts twice, each defaulting to yes:
+
+1. Symlink `claude/skills/plannotator-argus` into `~/.claude/skills/` so the model can reach for the skill.
+2. Append `claude/snippets/plannotator-argus.md` to `~/.claude/CLAUDE.md` (between idempotency markers) for users who want the orientation always loaded.
+
+Both the skill and the snippet self-gate on argus-awareness (cwd under `~/.argus/worktrees/` or `ARGUS_TASK_ID` set), so they stay inert in unrelated sessions.
+
+If you compile `~/.claude/CLAUDE.md` from a snippet pipeline (e.g. `claude-rules/snippets/`), set `--snippet-dir <path>` or `$CLAUDE_SNIPPETS_DIR` and the installer symlinks the snippet into that directory instead of appending to `CLAUDE.md`:
+
+```bash
+CLAUDE_SNIPPETS_DIR=~/path/to/claude-rules/snippets/global ./install-claude-skills.sh
+```
+
+The installer is idempotent (re-runs report `created` / `ok` / `relinked` / `SKIPPED`) and never overwrites a real (non-symlink) file. This is separate from `deploy/install.sh`, which installs the daemon, hook wrapper, and bash-guard.
+
 ## Design
 
 See `openspec/changes/plannotator-argus-plugin/design.md`.
