@@ -55,34 +55,68 @@ The plugin SHALL ship an optional CLAUDE.md snippet at `claude/snippets/plannota
 
 ### Requirement: Idempotent agent-facing artifact installer
 
-The plugin SHALL ship an idempotent installer at `install-claude-skill.sh` in the repo root that symlinks the skill into the user's `~/.claude/skills/` directory and offers to install the snippet. The installer SHALL be safe to re-run and SHALL report what changed.
+The plugin SHALL ship an idempotent installer at `install-claude-skills.sh` in the repo root that prompts the user `(Y/n)` to symlink the skill into `~/.claude/skills/` and prompts `(Y/n)` to append the snippet to `~/.claude/CLAUDE.md`. The installer SHALL be safe to re-run and SHALL report what changed. A `-y`/`--yes` flag SHALL answer yes to both prompts, and when stdin is not a TTY each prompt SHALL resolve to its default rather than blocking.
 
 #### Scenario: Installer symlinks the skill on a clean install
 
-- **WHEN** `install-claude-skill.sh` runs and `~/.claude/skills/plannotator-argus` does not exist
+- **WHEN** `install-claude-skills.sh` runs, the skill prompt is answered yes, and `~/.claude/skills/plannotator-argus` does not exist
 - **THEN** it creates a symlink `~/.claude/skills/plannotator-argus` pointing at the repo's `claude/skills/plannotator-argus` directory and reports it as `created`
 
 #### Scenario: Installer is idempotent on re-run
 
-- **WHEN** `install-claude-skill.sh` runs and `~/.claude/skills/plannotator-argus` is already a symlink to the repo's skill directory
+- **WHEN** `install-claude-skills.sh` runs with the skill prompt answered yes and `~/.claude/skills/plannotator-argus` is already a symlink to the repo's skill directory
 - **THEN** it leaves the symlink in place and reports it as already linked rather than erroring
 
 #### Scenario: Installer repoints a stale symlink
 
-- **WHEN** `install-claude-skill.sh` runs and `~/.claude/skills/plannotator-argus` is a symlink pointing at a different source
+- **WHEN** `install-claude-skills.sh` runs with the skill prompt answered yes and `~/.claude/skills/plannotator-argus` is a symlink pointing at a different source
 - **THEN** it repoints the symlink at the repo's skill directory and reports it as relinked
 
 #### Scenario: Installer refuses to clobber a real file
 
-- **WHEN** `install-claude-skill.sh` runs and a real (non-symlink) file or directory already occupies `~/.claude/skills/plannotator-argus`
+- **WHEN** `install-claude-skills.sh` runs with the skill prompt answered yes and a real (non-symlink) file or directory already occupies `~/.claude/skills/plannotator-argus`
 - **THEN** it leaves the existing path untouched and reports it as skipped because it is not a symlink
+
+#### Scenario: Skill prompt answered no skips the symlink
+
+- **WHEN** `install-claude-skills.sh` runs and the skill prompt is answered no (e.g. `--no-skill`)
+- **THEN** it does not create or modify `~/.claude/skills/plannotator-argus`
+
+#### Scenario: Installer appends the snippet to CLAUDE.md
+
+- **WHEN** `install-claude-skills.sh` runs, the snippet prompt is answered yes, no snippet directory is configured, and `~/.claude/CLAUDE.md` does not already contain the snippet's marker block
+- **THEN** it appends the snippet content to `~/.claude/CLAUDE.md` wrapped in `BEGIN`/`END` plannotator-argus markers
+
+#### Scenario: Snippet append is idempotent on re-run
+
+- **WHEN** `install-claude-skills.sh` runs with the snippet prompt answered yes and `~/.claude/CLAUDE.md` already contains the snippet's marker block
+- **THEN** it replaces the content between the markers rather than appending a duplicate block
 
 #### Scenario: Installer symlinks the snippet when a snippet dir is provided
 
-- **WHEN** `install-claude-skill.sh` runs with `--snippet-dir <path>` or with `$CLAUDE_SNIPPETS_DIR` set to an existing directory
-- **THEN** it symlinks `claude/snippets/plannotator-argus.md` into that directory using the same idempotent classification as the skill
+- **WHEN** `install-claude-skills.sh` runs with `--snippet-dir <path>` or with `$CLAUDE_SNIPPETS_DIR` set to an existing directory
+- **THEN** it symlinks `claude/snippets/plannotator-argus.md` into that directory using the same idempotent classification as the skill and does not append to `~/.claude/CLAUDE.md`
 
-#### Scenario: Installer prints the snippet path when no snippet dir is provided
+### Requirement: Agent-facing artifact uninstaller
 
-- **WHEN** `install-claude-skill.sh` runs without `--snippet-dir` and without `$CLAUDE_SNIPPETS_DIR`
-- **THEN** it prints the snippet's absolute path and a one-line instruction for wiring it in manually, without failing
+The plugin SHALL ship an uninstaller at `uninstall-claude-skills.sh` in the repo root that reverses `install-claude-skills.sh`. It SHALL prompt `(Y/n)` to remove the skill symlink and `(Y/n)` to remove the appended snippet block, SHALL only remove artifacts it owns, and SHALL be safe to re-run. It SHALL accept the same `-y`/`--yes` and `--no-*` decision flags as the installer.
+
+#### Scenario: Uninstaller removes the skill symlink it owns
+
+- **WHEN** `uninstall-claude-skills.sh` runs with the skill prompt answered yes and `~/.claude/skills/plannotator-argus` is a symlink pointing at this repo's skill directory
+- **THEN** it removes the symlink and reports it as removed
+
+#### Scenario: Uninstaller leaves a foreign target untouched
+
+- **WHEN** `uninstall-claude-skills.sh` runs and `~/.claude/skills/plannotator-argus` is a real file/directory or a symlink pointing at a different source
+- **THEN** it leaves the path untouched and reports that it was not removed because it is not owned by this installer
+
+#### Scenario: Uninstaller strips the snippet block from CLAUDE.md
+
+- **WHEN** `uninstall-claude-skills.sh` runs with the snippet prompt answered yes and `~/.claude/CLAUDE.md` contains the snippet's marker block
+- **THEN** it removes the content between and including the markers, leaving the rest of `~/.claude/CLAUDE.md` intact
+
+#### Scenario: Uninstaller is idempotent when nothing is installed
+
+- **WHEN** `uninstall-claude-skills.sh` runs and neither the skill symlink nor the snippet marker block is present
+- **THEN** it reports each target as not present and exits without error
