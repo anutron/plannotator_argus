@@ -3,13 +3,11 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -251,42 +249,54 @@ sleep 60
 	}
 }
 
-func TestWritePidfileRefusesLivePidfile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "argus-plugin.pid")
-	// Write current PID (definitely alive).
-	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	err := writePidfile(path)
-	if err == nil {
-		t.Fatal("expected refusal to clobber live pidfile")
-	}
-	if !strings.Contains(err.Error(), "already running") {
-		t.Errorf("err = %v, want 'already running' message", err)
-	}
-}
+// TestRunHoldsPIDLockForLifetimeAndReleasesOnExit exercises the Run loop's
+// pidfile handling end-to-end: the lock must be held for as long as Run is
+// running (so a concurrent start refuses), and released promptly when Run
+// exits, regardless of exit path.
+func TestRunHoldsPIDLockForLifetimeAndReleasesOnExit(t *testing.T) {
+	stub := newStubArgus(t)
+	defer stub.server.Close()
+	bin := writePlannotatorStub(t)
+	cfg := setupCfg(t, stub.server.URL, bin)
 
-func TestWritePidfileRemovesStalePidfile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "argus-plugin.pid")
-	// PID 1 is init/launchd; pick something guaranteed dead on macOS by
-	// using INT_MAX-ish that won't allocate. Use 99999999 which is way out
-	// of normal PID range on macOS (cap is 99998).
-	if err := os.WriteFile(path, []byte("99999999\n"), 0o600); err != nil {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, cfg, nil)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if st, err := ProbePIDFile(cfg.PIDPath()); err == nil && st.Running {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	st, err := ProbePIDFile(cfg.PIDPath())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writePidfile(path); err != nil {
-		t.Fatalf("expected stale pidfile to be recovered, got %v", err)
+	if !st.Running {
+		t.Fatal("expected Run to hold the pidfile lock while running")
 	}
-	raw, _ := os.ReadFile(path)
-	if !strings.Contains(string(raw), fmt.Sprintf("%d", os.Getpid())) {
-		t.Errorf("pidfile not rewritten with current pid; got %q", raw)
+
+	if _, err := AcquirePIDLock(cfg.PIDPath()); err == nil {
+		t.Error("expected a concurrent AcquirePIDLock to refuse while Run holds the lock")
 	}
-	// Mode must be 0600.
-	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("mode = %v, want 0600", info.Mode().Perm())
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not exit after ctx cancel")
+	}
+
+	st, err = ProbePIDFile(cfg.PIDPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Running {
+		t.Error("expected the pidfile lock to be released after Run exits")
 	}
 }
 

@@ -4,14 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
-	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/anutron/plannotator_argus/internal/config"
+	"github.com/anutron/plannotator_argus/internal/daemon"
 )
 
 func newStatusCmd() *cobra.Command {
@@ -33,24 +31,15 @@ func newStatusCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("stat pidfile %s: %w", pidPath, err)
 			}
-			raw, err := os.ReadFile(pidPath)
+			st, err := daemon.ProbePIDFile(pidPath)
 			if err != nil {
-				return fmt.Errorf("read pidfile %s: %w", pidPath, err)
+				return fmt.Errorf("check pidfile %s: %w", pidPath, err)
 			}
-			pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-			if err != nil {
-				return fmt.Errorf("invalid pidfile %s: %w", pidPath, err)
-			}
-			proc, err := os.FindProcess(pid)
-			if err != nil {
-				fmt.Printf("not running (stale pidfile pid=%d)\n", pid)
+			if !st.Running {
+				fmt.Printf("not running (stale pidfile pid=%d)\n", st.PID)
 				return nil
 			}
-			if err := proc.Signal(syscall.Signal(0)); err != nil {
-				fmt.Printf("not running (stale pidfile pid=%d)\n", pid)
-				return nil
-			}
-			fmt.Printf("running (pid=%d, since=%s)\n", pid, info.ModTime().Format(time.RFC3339))
+			fmt.Printf("running (pid=%d, since=%s)\n", st.PID, info.ModTime().Format(time.RFC3339))
 			return nil
 		},
 	}

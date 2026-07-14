@@ -4,14 +4,9 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"strconv"
-	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/anutron/plannotator_argus/internal/argus"
@@ -174,9 +169,10 @@ func (d *Daemon) Stop(ctx context.Context) {
 	})
 }
 
-// Run brings the daemon up, writes a pidfile (refusing to clobber a live
-// one), blocks until either ctx is canceled or the registrar reports a
-// fatal heartbeat failure, then gracefully shuts down.
+// Run brings the daemon up, acquires an exclusive advisory lock on the
+// pidfile (refusing to start if another daemon already holds it), blocks
+// until either ctx is canceled or the registrar reports a fatal heartbeat
+// failure, then gracefully shuts down.
 //
 // A fatal heartbeat failure causes Run to return the underlying error so
 // the CLI can propagate a non-zero exit code; launchd then restarts the
@@ -193,10 +189,11 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	}
 	defer d.Stop(context.Background())
 
-	if err := writePidfile(d.Cfg.PIDPath()); err != nil {
-		return fmt.Errorf("write pidfile: %w", err)
+	lock, err := AcquirePIDLock(d.Cfg.PIDPath())
+	if err != nil {
+		return fmt.Errorf("acquire pidfile lock: %w", err)
 	}
-	defer os.Remove(d.Cfg.PIDPath())
+	defer lock.Release()
 
 	var fatalCh <-chan error
 	if d.Registrar != nil {
@@ -213,38 +210,6 @@ func Run(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 		log.Error("fatal heartbeat failure; exiting for launchd restart", "err", fatalErr)
 		return fatalErr
 	}
-}
-
-// writePidfile creates the PID file with O_EXCL so a concurrent start
-// doesn't clobber an existing daemon's PID. If a stale pidfile exists
-// (no process), it is removed and the write retried.
-func writePidfile(path string) error {
-	contents := []byte(strconv.Itoa(os.Getpid()) + "\n")
-	const flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL
-	f, err := os.OpenFile(path, flags, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		raw, readErr := os.ReadFile(path)
-		if readErr == nil {
-			if pid, atoiErr := strconv.Atoi(strings.TrimSpace(string(raw))); atoiErr == nil {
-				if proc, perr := os.FindProcess(pid); perr == nil {
-					if sigErr := proc.Signal(syscall.Signal(0)); sigErr == nil {
-						return fmt.Errorf("another plannotator-argus daemon is already running (pid=%d, pidfile=%s)", pid, path)
-					}
-				}
-			}
-		}
-		// Stale pidfile — remove and retry once.
-		if rmErr := os.Remove(path); rmErr != nil {
-			return fmt.Errorf("remove stale pidfile %s: %w", path, rmErr)
-		}
-		f, err = os.OpenFile(path, flags, 0o600)
-	}
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.Write(contents)
-	return err
 }
 
 func waitWithTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
