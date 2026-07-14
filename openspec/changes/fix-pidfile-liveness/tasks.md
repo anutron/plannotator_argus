@@ -37,4 +37,4 @@
 - [x] 5.1 `go build ./...` and `go vet ./...` pass
 - [x] 5.2 `go test ./...` passes
 - [x] 5.3 `openspec validate fix-pidfile-liveness --strict` passes
-- [ ] 5.4 Commit deltas, tests, and code together; open a PR via `iris_gh_pr_create` (do not merge)
+- [x] 5.4 Commit deltas, tests, and code together; open a PR via `iris_gh_pr_create` (do not merge) — https://github.com/anutron/plannotator_argus/pull/5
