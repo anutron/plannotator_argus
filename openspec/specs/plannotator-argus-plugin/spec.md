@@ -1,7 +1,9 @@
 # plannotator-argus-plugin Specification
 
 ## Purpose
-TBD - created by archiving change plannotator-argus-plugin. Update Purpose after archive.
+
+Defines the plannotator-argus daemon, which registers Plannotator MCP tools with argus so sandboxed agents can run annotation and review sessions and poll for results.
+
 ## Requirements
 ### Requirement: MCP tool registration
 
